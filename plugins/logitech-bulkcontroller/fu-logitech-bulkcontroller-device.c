@@ -62,6 +62,7 @@ struct _FuLogitechBulkcontrollerDevice {
 	guint update_iface;
 	FuLogitechBulkcontrollerDeviceStatus status;
 	FuLogitechBulkcontrollerDeviceUpdateState update_status;
+	/* percentage value */
 	guint update_progress;
 	gboolean is_sync_transfer_in_progress;
 };
@@ -618,7 +619,6 @@ static gboolean
 fu_logitech_bulkcontroller_device_get_data(FuDevice *device, gboolean send_req, GError **error)
 {
 	FuLogitechBulkcontrollerDevice *self = FU_LOGITECH_BULKCONTROLLER_DEVICE(device);
-	g_autoptr(GByteArray) device_request = g_byte_array_new();
 	g_autoptr(GByteArray) decoded_pkt = g_byte_array_new();
 	g_autoptr(GByteArray) device_response = g_byte_array_new();
 	FuLogitechBulkcontrollerProtoId proto_id = kProtoId_UnknownId;
@@ -631,6 +631,7 @@ fu_logitech_bulkcontroller_device_get_data(FuDevice *device, gboolean send_req, 
 	 * upgrade
 	 */
 	if (send_req) {
+		g_autoptr(GByteArray) device_request = g_byte_array_new();
 		device_request = proto_manager_generate_get_device_info_request();
 		if (!fu_logitech_bulkcontroller_device_send_sync_cmd(self,
 								     CMD_BUFFER_WRITE,
@@ -716,11 +717,10 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 
 	/* progress */
 	fu_progress_set_id(progress, G_STRLOC);
-	fu_progress_add_flag(progress, FU_PROGRESS_FLAG_GUESSED);
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_BUSY, 1);
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 49);
-	fu_progress_add_step(progress, FWUPD_STATUS_LOADING, 49);
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_BUSY, 1);
+	fu_progress_add_step(progress, FWUPD_STATUS_LOADING, 49);
 
 	/* get default image */
 	fw = fu_firmware_get_bytes(firmware, error);
@@ -747,9 +747,9 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 		g_prefix_error(error, "failed to write start transfer packet: ");
 		return FALSE;
 	}
+	/* progress - FWUPD_STATUS_DEVICE_BUSY finished */
 	fu_progress_step_done(progress);
-	/* push image to devicee */
-	fu_progress_set_status(progress, FWUPD_STATUS_DEVICE_WRITE);
+	/* push image to device */
 	/* each block */
 	chunks = fu_chunk_array_new_from_bytes(fw, 0x0, 0x0, PAYLOAD_SIZE);
 	for (guint i = 0; i < chunks->len; i++) {
@@ -767,6 +767,8 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 						i + 1,
 						chunks->len);
 	}
+	/* progress - FWUPD_STATUS_DEVICE_WRITE finished */
+	fu_progress_step_done(progress);
 
 	/* sending end transfer */
 	base64hash = fu_logitech_bulkcontroller_device_compute_hash(fw);
@@ -787,13 +789,13 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 		g_prefix_error(error, "failed to write finish transfer packet: ");
 		return FALSE;
 	}
-	/* progress - FWUPD_STATUS_DEVICE_WRITE finished */
+	/* progress - FWUPD_STATUS_DEVICE_BUSY finished */
 	fu_progress_step_done(progress);
-	/* device validating and uploading new image on inactive partition */
-	fu_progress_set_status(progress, FWUPD_STATUS_LOADING);
+
 	/*
-	 * image file pushed, restart sync cb, to get the update progress
-	 * If no error, status changes as follows:
+	 * image file pushed. Device validates and uploads new image on inactive partition.
+	 * Restart sync cb, to get the update progress
+	 * Normally status changes as follows:
 	 *  While image being pushed: kUpdateStateCurrent->kUpdateStateDownloading (~5minutes)
 	 *  After image push is complete: kUpdateStateDownloading->kUpdateStateReady
 	 *  Validating image: kUpdateStateReady->kUpdateStateStarting
@@ -801,7 +803,7 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 	 *  Upload finished: kUpdateStateUpdating->kUpdateStateCurrent (~5minutes)
 	 *  After upload is finished, device reboots itself
 	 */
-	g_usleep(1 * G_TIME_SPAN_SECOND);
+	g_usleep(G_TIME_SPAN_SECOND);
 	/* save the current firmware version for troubleshooting purpose */
 	old_firmware_version = g_strdup(fu_device_get_version(device));
 	do {
@@ -858,7 +860,7 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 			 * device no longer broadcast fu related events, need to query device
 			 * explicitly now
 			 */
-			g_usleep(1 * G_TIME_SPAN_SECOND);
+			g_usleep(G_TIME_SPAN_SECOND);
 			continue;
 		}
 		fu_progress_set_percentage_full(fu_progress_get_child(progress),
@@ -874,7 +876,6 @@ fu_logitech_bulkcontroller_device_write_firmware(FuDevice *device,
 				    "firmware upgrade timeout: ");
 		return FALSE;
 	}
-	fu_progress_step_done(progress);
 
 	/* success! */
 	return TRUE;
@@ -937,20 +938,19 @@ fu_logitech_bulkcontroller_device_close(FuDevice *device, GError **error)
 }
 
 static void
-fu_logitech_bulkcontroller_device_handshake(FuDevice *device)
+fu_logitech_bulkcontroller_device_handshake(FuLogitechBulkcontrollerDevice *self)
 {
-	FuLogitechBulkcontrollerDevice *self = FU_LOGITECH_BULKCONTROLLER_DEVICE(device);
-	g_autoptr(GByteArray) decoded_pkt = g_byte_array_new();
-	g_autoptr(GByteArray) device_response = g_byte_array_new();
-	FuLogitechBulkcontrollerProtoId proto_id = kProtoId_UnknownId;
 	gint init_retry = 1;
-	g_autoptr(GError) local_error = NULL;
 
 	/* skip optional initialization events like:
 	 * kProtoId_HandshakeEvent, kProtoId_CrashDumpAvailableEvent
 	 * not an error if these events are not received or we missed them
 	 */
 	do {
+		g_autoptr(GByteArray) decoded_pkt = g_byte_array_new();
+		g_autoptr(GByteArray) device_response = g_byte_array_new();
+		FuLogitechBulkcontrollerProtoId proto_id = kProtoId_UnknownId;
+		g_autoptr(GError) local_error = NULL;
 		if (!fu_logitech_bulkcontroller_device_startlistening_sync(self,
 									   device_response,
 									   &local_error)) {
@@ -1015,7 +1015,7 @@ fu_logitech_bulkcontroller_device_setup(FuDevice *device, GError **error)
 		return FALSE;
 
 	/* skip some of the optional initialization events generated by the device */
-	fu_logitech_bulkcontroller_device_handshake(device);
+	fu_logitech_bulkcontroller_device_handshake(self);
 
 	/*
 	 * device supports USB_Device mode, Appliance mode and BYOD mode.
@@ -1112,7 +1112,6 @@ static void
 fu_logitech_bulkcontroller_device_set_progress(FuDevice *self, FuProgress *progress)
 {
 	fu_progress_set_id(progress, G_STRLOC);
-	fu_progress_add_flag(progress, FU_PROGRESS_FLAG_GUESSED);
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_RESTART, 0); /* detach */
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_WRITE, 99);	/* write */
 	fu_progress_add_step(progress, FWUPD_STATUS_DEVICE_RESTART, 0); /* attach */
