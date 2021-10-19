@@ -429,19 +429,7 @@ fu_logitech_bulkcontroller_device_sync_cb(GObject *source_object,
 	guint32 response_length = 0;
 	guint8 ack_payload[SYNC_ACK_PAYLOAD_LENGTH] = {0};
 	g_autoptr(GByteArray) buf_ack = g_byte_array_new();
-	/* using local variable to prevent following assertion messages
-	 * FuCommon fu_common_read_uint32_safe: assertion 'error == NULL || *error == NULL' failed
-	 */
-	g_autoptr(GError) finish_error = NULL;
 
-	if (!g_usb_device_bulk_transfer_finish(G_USB_DEVICE(source_object), res, &finish_error)) {
-		g_propagate_prefixed_error(&helper->error,
-					   g_steal_pointer(&finish_error),
-					   "failed to finish using bulk transfer %s: ",
-					   finish_error->message);
-		g_main_loop_quit(helper->loop);
-		return;
-	}
 	if (!fu_common_read_uint32_safe(helper->buf_pkt->data,
 					helper->buf_pkt->len,
 					COMMAND_OFFSET,
@@ -608,7 +596,7 @@ fu_logitech_bulkcontroller_device_startlistening_sync(FuLogitechBulkcontrollerDe
 
 		/* just show to console */
 		if (helper->error != NULL)
-			g_warning("%s", helper->error->message);
+			g_warning("async error %s", helper->error->message);
 	}
 
 	/* success */
@@ -937,66 +925,80 @@ fu_logitech_bulkcontroller_device_close(FuDevice *device, GError **error)
 	    ->close(device, error);
 }
 
-static void
-fu_logitech_bulkcontroller_device_handshake(FuLogitechBulkcontrollerDevice *self)
+static gboolean
+fu_logitech_bulkcontroller_device_get_handshake_cb(FuDevice *device,
+						   gpointer user_data,
+						   GError **error)
 {
-	gint init_retry = 1;
+	FuLogitechBulkcontrollerDevice *self = FU_LOGITECH_BULKCONTROLLER_DEVICE(device);
 
 	/* skip optional initialization events like:
 	 * kProtoId_HandshakeEvent, kProtoId_CrashDumpAvailableEvent
-	 * not an error if these events are not received or we missed them
+	 * not an error if these events are not received or missed
 	 */
-	do {
-		g_autoptr(GByteArray) decoded_pkt = g_byte_array_new();
-		g_autoptr(GByteArray) device_response = g_byte_array_new();
-		FuLogitechBulkcontrollerProtoId proto_id = kProtoId_UnknownId;
-		g_autoptr(GError) local_error = NULL;
-		if (!fu_logitech_bulkcontroller_device_startlistening_sync(self,
-									   device_response,
-									   &local_error)) {
-			if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
-				g_debug("failed to receive data packet for shake hand request");
-			}
-			continue;
-		}
-		/* handle error scenario, e.g. CMD_UNINIT_BUFFER arrived before CMD_BUFFER_READ */
-		if (device_response->len == 0) {
-			if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
-				g_debug("failed to receive expected packet for shake hand request");
-			}
-			continue;
-		}
-		decoded_pkt = proto_manager_decode_message(device_response->data,
-							   device_response->len,
-							   &proto_id,
-							   &local_error);
-		if (decoded_pkt == NULL) {
-			if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
-				g_debug("failed to unpack packet for shake hand request");
-			}
-			continue;
-		}
+	g_autoptr(GByteArray) decoded_pkt = g_byte_array_new();
+	g_autoptr(GByteArray) device_response = g_byte_array_new();
+	FuLogitechBulkcontrollerProtoId proto_id = kProtoId_UnknownId;
+	g_autoptr(GError) local_error = NULL;
+
+	if (!fu_logitech_bulkcontroller_device_startlistening_sync(self,
+								   device_response,
+								   &local_error)) {
 		if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
-			g_autofree gchar *strsafe =
-			    fu_common_strsafe((const gchar *)decoded_pkt->data, decoded_pkt->len);
-			g_debug("Received initialization response: id: %u, length %u, data: %s",
-				proto_id,
-				device_response->len,
-				strsafe);
+			g_debug("failed to receive data packet for hand shake request");
 		}
-		if (proto_id == kProtoId_HandshakeEvent) {
-			break;
-		}
-	} while (init_retry--);
-	/* return if maximum retires are done.*/
-	if (init_retry <= 0) {
-		if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
-			g_debug("failed to receive initialization events");
-		}
-		return;
+		g_set_error_literal(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_FAILED,
+				    "failed to receive data packet for hand shake request");
+		return FALSE;
 	}
 
-	return;
+	/* handle error scenario, e.g. CMD_UNINIT_BUFFER arrived before CMD_BUFFER_READ */
+	if (device_response->len == 0) {
+		if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
+			g_debug("failed to receive expected packet for hand shake request");
+		}
+		g_set_error_literal(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_FAILED,
+				    "failed to receive expected packet for hand shake request");
+		return FALSE;
+	}
+
+	decoded_pkt = proto_manager_decode_message(device_response->data,
+						   device_response->len,
+						   &proto_id,
+						   &local_error);
+	if (decoded_pkt == NULL) {
+		if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
+			g_debug("failed to unpack packet for hand shake request");
+		}
+		g_set_error_literal(error,
+				    G_IO_ERROR,
+				    G_IO_ERROR_FAILED,
+				    "failed to unpack packet for hand shake request");
+		return FALSE;
+	}
+
+	if (g_getenv("FWUPD_LOGITECH_BULKCONTROLLER_VERBOSE") != NULL) {
+		g_autofree gchar *strsafe =
+		    fu_common_strsafe((const gchar *)decoded_pkt->data, decoded_pkt->len);
+		g_debug("Received initialization response: id: %d, length %u, data: %s",
+			kProtoId_HandshakeEvent,
+			device_response->len,
+			strsafe);
+	}
+
+	if (proto_id == kProtoId_HandshakeEvent)
+		return TRUE;
+
+	g_set_error(error,
+		    G_IO_ERROR,
+		    G_IO_ERROR_FAILED,
+		    "invalid initialization message received: %u",
+		    proto_id);
+	return FALSE;
 }
 
 static gboolean
@@ -1009,13 +1011,21 @@ fu_logitech_bulkcontroller_device_setup(FuDevice *device, GError **error)
 	FuLogitechBulkcontrollerProtoId proto_id = kProtoId_UnknownId;
 	guint32 success = 0;
 	guint32 error_code = 0;
+	g_autoptr(GError) error_local = NULL;
 
 	/* FuUsbDevice->setup */
 	if (!FU_DEVICE_CLASS(fu_logitech_bulkcontroller_device_parent_class)->setup(device, error))
 		return FALSE;
 
-	/* skip some of the optional initialization events generated by the device */
-	fu_logitech_bulkcontroller_device_handshake(self);
+	/* skip some of the optional initialization events generated by the device
+	 * no error check needed here */
+	if (!fu_device_retry(device,
+			     fu_logitech_bulkcontroller_device_get_handshake_cb,
+			     MAX_RETRIES,
+			     NULL,
+			     &error_local)) {
+		g_warning("failed to receive initialization events: %s", error_local->message);
+	}
 
 	/*
 	 * device supports USB_Device mode, Appliance mode and BYOD mode.
