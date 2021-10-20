@@ -134,7 +134,6 @@ fu_plugin_backend_device_added(FuPlugin *plugin, FuDevice *device, GError **erro
 	locker = fu_device_locker_new(FU_DEVICE(hub), error);
 	if (locker == NULL)
 		return FALSE;
-	fu_plugin_device_add(plugin, FU_DEVICE(hub));
 
 	if (fu_device_has_private_flag(FU_DEVICE(hub), FU_DELL_DOCK_HUB_FLAG_HAS_BRIDGE)) {
 		g_autoptr(GError) error_local = NULL;
@@ -154,6 +153,7 @@ fu_plugin_backend_device_added(FuPlugin *plugin, FuDevice *device, GError **erro
 				  error_local->message);
 		}
 	}
+	fu_plugin_device_add(plugin, FU_DEVICE(hub));
 
 	/* clear updatable flag if parent doesn't have it */
 	fu_dell_dock_clone_updatable(FU_DEVICE(hub));
