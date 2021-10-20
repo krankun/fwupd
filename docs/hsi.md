@@ -59,26 +59,40 @@ Orthogonal to the security features provided by the firmware there are other sec
 It would not make sense to have *have updates on the LVFS* as a requirement for a specific security level as this would mean offline the platform might be a higher level initially but as soon as it is brought online it is downgraded which would be really confusing to users.
 The *core* security level will not change at Operating System runtime, but the suffix may.
 
-### HSI:0 (Insecure) {#hsi-level0}
+### HSI:0 (Insecure State) {#hsi-level0}
 
-The lowest security level with little or no detected firmware protections.
+Limited firmware protection.
+
+The lowest security level with a limited firmware protections.
 This is the default security level if no tests can be run or some tests in the next security level have failed.
 
-### HSI:1 (Critical) {#hsi-level1}
+### HSI:1 (Critical State) {#hsi-level1}
+
+Basic protection but any failure would lead to a critical security impact.
 
 This security level corresponds to the most basic of security protections considered essential by security professionals.
 Any failures at this level would have critical security impact and could likely be used to compromise the system firmware without physical access.
 
-### HSI:3 (Theoretical) {#hsi-level2}
+### HSI:2 (Risky State) {#hsi-level2}
+
+The failure is only happened by the theoretical exploit in the lab.
 
 This security level corresponds to firmware security issues that pose a theoretical concern or where any exploit would be difficult or impractical to use.
 At this level various technologies may be employed to protect the boot process from modification by an attacker with local access to the machine.
 
-### HSI:4 (System Protection) {#hsi-level4}
+### HSI:3 (Protected State) {#hsi-level3}
+
+The system firmware only has few minor issues which do not affect the security status.
 
 This security level corresponds to out-of-band protection of the system firmware perhaps including recovery.
 
-### HSI:5 (System Attestation) {#hsi-level5}
+### HSI:4 (Secure State) {#hsi-level4}
+
+The system is in a robust secure state.
+
+The system is corresponding several kind of encryption and execution protection for the system firmware.
+
+### HSI:5 (Secure Proved State) {#hsi-level5}
 
 This security level corresponds to out-of-band attestation of the system firmware.
 There are currently no tests implemented for HSI:5 and so this security level cannot yet be obtained.
